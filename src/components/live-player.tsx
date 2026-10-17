@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import Artplayer from 'artplayer';
 import Hls, { type HlsConfig } from 'hls.js';
 import { Spinner } from './states';
+import { useCast, type CastStartArgs } from '@/lib/cast/use-cast';
+import { CastOverlay, CAST_BUTTON_SVG } from '@/components/cast/cast-overlay';
 
 /**
  * 直播播放器：与点播 player-shell 完全独立。
@@ -66,6 +68,15 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
   const [osdTitle, setOsdTitle] = useState('');
   const osdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // —— 投屏（DLNA）：入口在控制条右侧，面板挂在播放器容器内（全屏可用） ——
+  const cast = useCast();
+  const [castOpen, setCastOpen] = useState(false);
+  const castActiveRef = useRef(false);
+  /** 上一条频道地址：区分「换台」与「重试/回调身份变化」引发的 effect 重跑 */
+  const prevUrlRef = useRef<string | null>(null);
+  const castRef = useRef(cast);
+  castRef.current = cast;
 
   // url 变化即换台：显示频道名 2.5s
   useEffect(() => {
@@ -290,6 +301,14 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
         click: () => onNextChannel(),
       });
     }
+    controls.push({
+      name: 'cast-btn',
+      position: 'right',
+      index: 0,
+      html: CAST_BUTTON_SVG,
+      tooltip: '投屏',
+      click: () => setCastOpen(true),
+    });
     const art = new Artplayer({
       container: containerRef.current,
       url,
@@ -340,6 +359,13 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       setShowPoster(false);
       setError('');
     });
+    art.on('video:play', () => {
+      // 投屏期间禁止本机起播：电视端在独立拉流，本机再拉一路浪费带宽且画面分裂
+      if (castActiveRef.current) {
+        art.pause();
+        showHint('正在投屏，本机已暂停播放');
+      }
+    });
     art.on('video:error', () => {
       // mpegts 走自身 ERROR 事件；这里兜底其它未知错误
       if (!mpegtsRef.current) setError('视频播放失败，请尝试其他频道');
@@ -359,6 +385,18 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       }
     }, 15000);
 
+    // 换台跟投：投屏中切到新频道，直接把新流推给电视（重试/回调身份变化不触发）
+    if (castActiveRef.current && prevUrlRef.current !== null && prevUrlRef.current !== url) {
+      const session = castRef.current.session;
+      if (session && !session.endedNotice) {
+        void castRef.current.startCast(
+          { id: session.deviceId, name: session.deviceName },
+          { url, title, live: true, positionSec: 0 }
+        );
+      }
+    }
+    prevUrlRef.current = url;
+
     return () => {
       disposed = true;
       clearTimeout(startTimer);
@@ -370,6 +408,46 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, retryNonce, onPrevChannel, onNextChannel]);
+
+  // —— 投屏会话联动 ——
+
+  // 电视端主动停止 → 本地恢复拉流起播（直播无进度概念，直接回到边缘）
+  useEffect(() => {
+    if (!castActiveRef.current) return;
+    if (!cast.session?.endedNotice) return;
+    castActiveRef.current = false;
+    hlsRef.current?.startLoad();
+    artRef.current?.play().catch(() => {});
+  }, [cast.session]);
+
+  /** 投屏开始后的本机善后：暂停并停拉流，带宽让给电视 */
+  const handleCastStarted = () => {
+    castActiveRef.current = true;
+    const art = artRef.current;
+    if (!art) return;
+    art.pause();
+    hlsRef.current?.stopLoad();
+    if (mpegtsRef.current) {
+      try { mpegtsRef.current.pause(); } catch { /* 忽略 */ }
+    }
+  };
+
+  /** 用户主动断开：本地恢复播放（直播继续追边缘） */
+  const handleCastStopped = () => {
+    castActiveRef.current = false;
+    hlsRef.current?.startLoad();
+    if (mpegtsRef.current) {
+      try { mpegtsRef.current.play(); } catch { /* 忽略 */ }
+    }
+    artRef.current?.play().catch(() => {});
+  };
+
+  const getCastStartArgs = (): CastStartArgs => ({
+    url,
+    title,
+    live: true,
+    positionSec: 0,
+  });
 
   return (
     <div className="relative w-full h-full">
@@ -425,6 +503,15 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
           {hint}
         </div>
       )}
+      <CastOverlay
+        open={castOpen}
+        onClose={() => setCastOpen(false)}
+        cast={cast}
+        getStartArgs={getCastStartArgs}
+        onCastStarted={handleCastStarted}
+        onCastStopped={handleCastStopped}
+        live
+      />
     </div>
   );
 }

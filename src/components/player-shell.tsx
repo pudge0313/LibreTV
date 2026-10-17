@@ -12,6 +12,8 @@ import {
 } from '@/lib/video-prefetcher';
 import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
+import { setCastProgressHandler, useCast, type CastStartArgs } from '@/lib/cast/use-cast';
+import { CastOverlay, CAST_BUTTON_SVG } from '@/components/cast/cast-overlay';
 
 /**
  * 播放器外壳：ArtPlayer + hls.js（旧版 player.js 的 React 化）。
@@ -72,6 +74,15 @@ export function PlayerShell({
   // 起播前的品牌占位图（沿用旧版 nomedia 素材），实际开始播放后隐藏
   const [showPoster, setShowPoster] = useState(true);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // —— 投屏（DLNA）：入口在控制条，面板/会话状态见 cast-overlay 与 use-cast ——
+  const cast = useCast();
+  const [castOpen, setCastOpen] = useState(false);
+  const castActiveRef = useRef(false);
+  const lastTvPosRef = useRef(0);
+  // hook 每次渲染返回新对象，给闭包（播放器事件回调）用 ref 转发
+  const castRef = useRef(cast);
+  castRef.current = cast;
 
   // 始终持有最新 props/回调，避免重建播放器
   const propsRef = useRef({
@@ -341,6 +352,16 @@ export function PlayerShell({
       playsInline: true,
       airplay: true,
       hotkey: false,
+      controls: [
+        {
+          name: 'cast-btn',
+          position: 'right',
+          index: 0,
+          html: CAST_BUTTON_SVG,
+          tooltip: '投屏',
+          click: () => setCastOpen(true),
+        },
+      ],
       theme: '#2563eb',
       lang: navigator.language.toLowerCase().startsWith('zh') ? 'zh-cn' : 'en',
       moreVideoAttr: { crossOrigin: 'anonymous', playsInline: true },
@@ -384,6 +405,13 @@ export function PlayerShell({
       if (mediaHealthyRef.current) setError('');
       reportVideoHeight();
     });
+    art.on('video:play', () => {
+      // 投屏期间禁止本机起播（电视与本机双路拉流 + 画面分裂），只保留遥控
+      if (castActiveRef.current) {
+        art.pause();
+        showHint('正在投屏，本机已暂停播放');
+      }
+    });
     art.on('video:error', () => {
       mediaHealthyRef.current = false;
       // 起播阶段的 video 元素级错误（MSE/解码偶发失败）：重建一次播放链路自愈，
@@ -415,6 +443,8 @@ export function PlayerShell({
     });
     art.on('video:pause', () => {
       propsRef.current.onPause?.(art.currentTime, art.duration);
+      // 投屏中不铺预取：电视端在独立拉流，本机继续抢带宽会造成两边卡顿
+      if (castActiveRef.current) return;
       // 暂停 = 预取黄金窗口：解除限速并无限铺满整集（用户主动行为，带宽占用可接受）
       // waiting 触发的限速在此解除，否则黄金窗口会被 500ms 轮询冻结
       getVideoPrefetcher().setThrottled(false);
@@ -565,12 +595,75 @@ export function PlayerShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // —— 投屏：进度转发（同步观看历史）+ 电视端异常终止后的本地续播 + 换集跟投 ——
+
+  // 电视端进度回调转发给现有 onTimeUpdate 链路：投屏期间观看历史照常落盘。
+  // duration 为 0 说明电视端还在起播/不支持时长上报，此时不转发，避免用 0 覆盖真实进度
+  useEffect(() => {
+    setCastProgressHandler((position, duration) => {
+      if (duration <= 0) return;
+      lastTvPosRef.current = position;
+      propsRef.current.onTimeUpdate?.(position, duration);
+    });
+    return () => setCastProgressHandler(null);
+  }, []);
+
+  // 电视端主动停止（手动关播/格式不支持）→ 会话进入 endedNotice，本地从电视进度续播
+  useEffect(() => {
+    if (!castActiveRef.current) return;
+    const session = cast.session;
+    if (!session?.endedNotice) return;
+    castActiveRef.current = false;
+    const art = artRef.current;
+    if (!art) return;
+    const tvPos = session.positionSec;
+    if (tvPos > 0 && art.duration > 0 && tvPos < art.duration - 2) art.currentTime = tvPos;
+    hlsRef.current?.startLoad();
+    art.play().catch(() => {});
+  }, [cast.session]);
+
+  /** 投屏开始后的本机善后：暂停、停拉流、停预取（带宽全让给电视） */
+  const handleCastStarted = () => {
+    castActiveRef.current = true;
+    const art = artRef.current;
+    if (!art) return;
+    art.pause();
+    hlsRef.current?.stopLoad();
+    getVideoPrefetcher().stop();
+  };
+
+  /** 用户主动断开：本机从电视端进度无缝续播 */
+  const handleCastStopped = (tvPosition: number | null) => {
+    castActiveRef.current = false;
+    const art = artRef.current;
+    if (!art) return;
+    if (tvPosition && tvPosition > 0 && art.duration > 0 && tvPosition < art.duration - 2) {
+      art.currentTime = tvPosition;
+    }
+    hlsRef.current?.startLoad();
+    art.play().catch(() => {});
+  };
+
+  const getCastStartArgs = (): CastStartArgs => ({
+    url: propsRef.current.url,
+    title: propsRef.current.title,
+    positionSec: Math.floor(artRef.current?.currentTime ?? 0),
+  });
+
   // —— 换集：仅切换 HLS 源，不重建播放器（保留网页全屏等状态） ——
   const firstUrlRef = useRef(true);
   useEffect(() => {
     // 挂载时的首次由创建 effect 的 customType 触发，跳过避免重复加载
     if (firstUrlRef.current) { firstUrlRef.current = false; return; }
     loadEpisode(url);
+    // 投屏中换集：直接把新一集推到电视（本地保持遥控态），避免电视停在本集
+    const session = castRef.current.session;
+    if (castActiveRef.current && session && !session.endedNotice) {
+      void castRef.current.startCast(
+        { id: session.deviceId, name: session.deviceName },
+        { url, title: propsRef.current.title, positionSec: 0 }
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url]);
 
@@ -617,6 +710,14 @@ export function PlayerShell({
           自动连播已开启
         </div>
       )}
+      <CastOverlay
+        open={castOpen}
+        onClose={() => setCastOpen(false)}
+        cast={cast}
+        getStartArgs={getCastStartArgs}
+        onCastStarted={handleCastStarted}
+        onCastStopped={handleCastStopped}
+      />
     </div>
   );
 }

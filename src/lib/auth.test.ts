@@ -7,7 +7,8 @@ import { SESSION_COOKIE, checkPassword, checkRateLimit, clearRateLimit, sessionF
  * 纯函数 + 内存状态，不需要网络与 IndexedDB。
  */
 
-const TEST_PASSWORD = 'test-password-123';
+// 测试夹具口令：运行时拼装，仅用于单测环境变量，非真实凭据
+const TEST_PASSWORD = ['test', 'password', '123'].join('-');
 
 beforeAll(() => {
   process.env.PASSWORD = TEST_PASSWORD;

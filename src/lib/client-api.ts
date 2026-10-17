@@ -1,6 +1,7 @@
 'use client';
 
 import type { SearchResponse, SearchStreamEvent, SourceSearchOutcome, VideoDetail, DoubanResponse, BangumiCalendarResponse, AuthStatusResponse, SourceConfig, SearchResultItem, LivePlaylistResponse, LiveEpgResponse, SourceListPayload, QualityProbeItem, QualityProbeResult } from './types';
+import type { CastControlAction, CastDevice, CastStartArgs, CastStatus } from './cast/types';
 
 /**
  * 客户端 API 封装。401 时触发全局事件打开登录框，
@@ -283,6 +284,30 @@ export const api = {
 
     await consumeNdjson<LiveProbeResult>(res, onResult);
   },
+
+  /** 投屏：发现局域网 DLNA 渲染设备（空列表时带 hint 说明原因） */
+  castDiscover: (signal?: AbortSignal) =>
+    request<{ devices: CastDevice[]; hint?: string }>('/api/cast/discover', { method: 'POST', signal }),
+
+  /** 投屏：向设备下发媒体并开始播放 */
+  castConnect: (deviceId: string, args: CastStartArgs) =>
+    request<{ ok: boolean }>('/api/cast/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, ...args }),
+    }),
+
+  /** 投屏：播放/暂停/停止/跳转 */
+  castControl: (deviceId: string, action: CastControlAction, positionSec?: number) =>
+    request<{ ok: boolean; error?: string }>('/api/cast/control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, action, positionSec }),
+    }),
+
+  /** 投屏：轮询电视端播放状态 */
+  castStatus: (deviceId: string, signal?: AbortSignal) =>
+    request<CastStatus>(`/api/cast/control?deviceId=${encodeURIComponent(deviceId)}`, { signal }),
 };
 
 export interface SearchFailure {
