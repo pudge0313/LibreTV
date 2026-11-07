@@ -6,6 +6,8 @@ out/
 *.tsbuildinfo
 vitest-results.json
 *.log
+# 一键启动脚本的运行时文件（pid / dev 日志）
+.dev-server/
 
 # AI 工具产物（本机会话/缓存数据，不入库）
 .mimosa/

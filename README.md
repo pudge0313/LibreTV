@@ -207,6 +207,13 @@ npm test                            # 核心库单元测试（cms-parser / m3u8 
 npm run typecheck
 ```
 
+### Windows 一键启动
+
+双击 `scripts\start-dev.bat`：隐藏窗口在后台拉起 dev server，轮询 `/api/status` 就绪后自动打开浏览器；已在运行时不会重复起进程，只打开页面。停止服务双击 `scripts\stop-dev.bat`（按进程树结束，没有进程记录时按 8080 端口反查并确认是本项目后才结束）。
+
+- 同时提供 PowerShell 版：`scripts\start-dev.ps1`，支持 `-NoBrowser`（只起服务不开页面）与 `-Stop`（停止）。
+- 日志与进程号写入 `.dev-server\`（已 gitignore）；启动前会清空 `NODE_OPTIONS`，避免受管终端注入的文件删除守卫导致 Next.js 清理 `.next` 时被拦截退出。
+
 测试范围、发布流程与文档结构见 [开发文档](https://libretv.is-an.org/wiki/Development.html)。
 
 ## 发布新版本
