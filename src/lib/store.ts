@@ -6,6 +6,7 @@ import type { QualityEntry, SourceConfig, LiveSourceConfig, SourceSearchOutcome 
 import { isQualityEntryFresh, mergeQualityEntries, qualityKey } from './quality';
 import { clearLiveProbeResultsDb, loadLiveProbeResults, saveLiveProbeResults } from './db';
 import { PERSIST_KEY, createThrottledStorage } from './persist-storage';
+import { normalizeSourceApiUrl } from './source-url';
 
 /**
  * 全局设置（zustand + localStorage 持久化）。
@@ -203,6 +204,11 @@ interface AppState extends AppSettings {
   /** 已出现过的 env 预置订阅 URL（持久化：用户删除后不再被自动加回） */
   envSubsSeen: string[];
   addCustomApi: (api: Omit<SourceConfig, 'key'> & { key?: string }) => void;
+  /**
+   * 批量导入点播源（LibreTV-App 内置源 / 旧版配置迁移）。
+   * 按归一化后的地址去重，显式 key 被占用时自动改派；返回实际新增数量。
+   */
+  importCustomApis: (list: Array<Omit<SourceConfig, 'key'> & { key?: string }>) => number;
   updateCustomApi: (key: string, patch: Partial<SourceConfig>) => void;
   /** 删除点播源；返回被删快照供撤销，key 不存在时返回 null */
   removeCustomApi: (key: string) => RemovedSourceSnapshot | null;
@@ -321,6 +327,37 @@ export const useAppStore = create<AppState>()(
           customAPIs: [...list, entry],
           selectedKeys: selectable ? [...get().selectedKeys, entry.key] : get().selectedKeys,
         });
+      },
+
+      importCustomApis: (list) => {
+        const existing = get().customAPIs;
+        const usedUrls = new Set(existing.map((a) => a.url));
+        const usedKeys = new Set(existing.map((a) => a.key));
+        const added: SourceConfig[] = [];
+
+        for (const item of list) {
+          const url = normalizeSourceApiUrl(item.url);
+          // 同一地址重复导入（含订阅源、预置源）视为已存在，静默跳过
+          if (!url || usedUrls.has(url)) continue;
+          // 显式 key 被占用时改派自动生成的 key：订阅源 / 手工源可能已占同名
+          const key =
+            item.key && !usedKeys.has(item.key) ? item.key : nextCustomKey([...existing, ...added]);
+          if (usedKeys.has(key)) continue;
+          usedUrls.add(url);
+          usedKeys.add(key);
+          added.push({ ...item, url, key });
+        }
+
+        if (added.length === 0) return 0;
+        // 成人内容过滤开启时，成人源导入后不自动勾选（与 addCustomApi 语义一致）
+        const selectable = added
+          .filter((a) => !(a.isAdult && get().yellowFilter))
+          .map((a) => a.key);
+        set({
+          customAPIs: [...existing, ...added],
+          selectedKeys: Array.from(new Set([...get().selectedKeys, ...selectable])),
+        });
+        return added.length;
       },
 
       updateCustomApi: (key, patch) => {

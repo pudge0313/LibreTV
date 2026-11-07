@@ -412,7 +412,7 @@ function NoSourceGuide({ hasSources = false }: { hasSources?: boolean }) {
           <>
             LibreTV 不内置任何采集站。点击右上角「设置 → 添加 API」，填入一个
             Apple CMS 采集站地址（如 <code className="text-accent text-xs">https://example.com/api.php/provide/vod</code>），
-            勾选后即可开始搜索。
+            勾选后即可开始搜索；也可在「设置 → 点播源」点「导入 App 源」，一次导入 LibreTV-App 的 20 个内置采集站。
           </>
         )}
       </p>

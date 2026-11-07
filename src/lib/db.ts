@@ -3,6 +3,7 @@ import type { SourceConfig } from './types';
 // 仅类型引入：store.ts 运行时会引用本模块，反向只取类型不会形成运行时循环
 import type { LiveProbeEntry } from './store';
 import { PERSIST_KEY, flushPendingPersist } from './persist-storage';
+import { mergeAppSources, parseAppLegacySources, type AppLegacyImport } from './app-sources';
 
 /**
  * IndexedDB 持久化（替代旧版 localStorage 数据库）：
@@ -227,6 +228,46 @@ export async function exportConfig(): Promise<string> {
   });
 }
 
+/**
+ * 把 LibreTV-App 旧版配置里的点播源合并进已持久化的 store 快照。
+ *
+ * 不能走 store action：导入流程在写盘后立刻刷新页面，此刻 store 还是旧状态，
+ * 直接 set 会被节流缓冲的旧快照覆盖。这里先 flush，再原地改 localStorage 的
+ * `{state, version}` 包装，刷新后由 persist 正常水合。
+ * 只追加不覆盖：地址或 key 已存在即跳过，用户现有源不会被冲掉。
+ */
+function mergeAppSourcesIntoPersisted(legacy: AppLegacyImport): number {
+  flushPendingPersist();
+
+  const raw = localStorage.getItem(PERSIST_KEY);
+  let wrapper: { state?: Record<string, unknown>; version?: number } = { state: {} };
+  if (raw) {
+    try {
+      wrapper = JSON.parse(raw) as typeof wrapper;
+    } catch {
+      wrapper = { state: {} };
+    }
+  }
+
+  const state = (wrapper.state ?? {}) as { customAPIs?: SourceConfig[]; selectedKeys?: string[] };
+  const existing = Array.isArray(state.customAPIs) ? state.customAPIs : [];
+  const selected = Array.isArray(state.selectedKeys) ? state.selectedKeys : [];
+  const merged = mergeAppSources(existing, selected, legacy);
+  if (merged.added.length === 0) return 0;
+
+  const next = {
+    ...wrapper,
+    state: {
+      ...state,
+      customAPIs: [...existing, ...merged.added],
+      selectedKeys: merged.selectedKeys,
+    },
+    version: typeof wrapper.version === 'number' ? wrapper.version : 2,
+  };
+  localStorage.setItem(PERSIST_KEY, JSON.stringify(next));
+  return merged.added.length;
+}
+
 export async function importConfig(content: string): Promise<void> {
   const config = JSON.parse(content) as {
     name?: string;
@@ -241,6 +282,11 @@ export async function importConfig(content: string): Promise<void> {
     flushPendingPersist();
     localStorage.setItem(PERSIST_KEY, data[PERSIST_KEY]);
   }
+
+  // LibreTV-App（静态站 / Tauri 版，cfgVer 1.0.0）的导出没有本项目快照，
+  // data 里是 selectedAPIs + customAPIs，单独解析后合并进持久化状态
+  const appLegacy = parseAppLegacySources(data);
+  if (appLegacy && appLegacy.sources.length > 0) mergeAppSourcesIntoPersisted(appLegacy);
 
   if (typeof data['viewingHistory'] === 'string') {
     // 兼容旧版历史结构（含全集 URL 列表），只迁移定位信息

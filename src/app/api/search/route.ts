@@ -3,6 +3,7 @@ import { guardRequest } from '@/lib/api-guard';
 import { cmsRequestHeaders, filterAdultResults, filterRelevantResults, normalizeTitle, parseSearchList } from '@/lib/cms-parser';
 import { fetchUpstream, getCache, setCache } from '@/lib/fetch-utils';
 import { checkUpstreamAllowed } from '@/lib/ssrf';
+import { normalizeSourceApiUrl } from '@/lib/source-url';
 import type { SearchResponse, SearchStreamEvent, SourceConfig, SourceSearchOutcome } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -90,7 +91,8 @@ async function searchSource(source: SourceConfig, wd: string): Promise<SourceSea
     }, SEARCH_SOURCE_TIMEOUT_MS);
   });
 
-  const base = source.url.replace(/\/+$/, '');
+  // 兼容 LibreTV-App 的裸域名写法：客户端存量数据可能没经过归一化，这里兜一层
+  const base = normalizeSourceApiUrl(source.url);
   const fetchPage = async (page: number) => {
     const api = `${base}?ac=videolist&wd=${encodeURIComponent(wd)}&pg=${page}`;
     const res = await fetchUpstream(api, {

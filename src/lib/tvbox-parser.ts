@@ -8,6 +8,8 @@ import {
   parseSourceListPayload,
 } from './source-list';
 
+import { normalizeSourceApiUrl } from './source-url';
+
 /**
  * TVBOX 配置 JSON 的解析层：把 `sites` / `lives` 归一化为本站的 SourceListPayload，
  * 使同一份订阅入口同时兼容 LibreTV-SourceList 与 TVBOX 两种格式。
@@ -310,6 +312,8 @@ function collectVodSources(rawSites: unknown[], skipped: SkipCounter) {
       markSkipped(skipped, LOCAL_ASSET_PATTERN.test(api) ? 'spider' : 'invalidUrl', name);
       continue;
     }
+    // 兼容 LibreTV-App 的裸域名写法：先补全 CMS 路径，后续特征判定与入库都用补全后的地址
+    const apiUrl = normalizeSourceApiUrl(api);
     // 站点自身声明不可搜索：本站只有搜索入口，导入后无从使用
     if (site.searchable === 0 || site.searchable === '0') {
       markSkipped(skipped, 'unsearchable', name);
@@ -319,13 +323,13 @@ function collectVodSources(rawSites: unknown[], skipped: SkipCounter) {
     // 可导入判定：显式 JSON 接口，或类型缺失/写成 XML、外链但地址命中 Apple CMS 特征
     const importable =
       type === SITE_TYPE_JSON ||
-      ((type === undefined || type === SITE_TYPE_XML || type === SITE_TYPE_API) && CMS_API_PATTERN.test(api));
+      ((type === undefined || type === SITE_TYPE_XML || type === SITE_TYPE_API) && CMS_API_PATTERN.test(apiUrl));
     if (!importable) {
       markSkipped(skipped, type === SITE_TYPE_API ? 'spider' : 'xml', name);
       continue;
     }
 
-    const url = normalizeUrl(api, true);
+    const url = normalizeUrl(apiUrl, true);
     if (!url) {
       markSkipped(skipped, 'invalidUrl', name);
       continue;

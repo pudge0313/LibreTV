@@ -1,4 +1,5 @@
 import type { SourceListPayload } from './types';
+import { normalizeSourceApiUrl } from './source-url';
 
 /**
  * 数据源订阅（LibreTV-SourceList JSON）的纯解析层：只做字段裁剪、去重与上限，
@@ -33,10 +34,13 @@ interface RawItem {
 /**
  * 规范化为 http(s) 地址；trimTrailingSlash 控制是否去掉尾部斜杠（点播去、直播保留）。
  * 导出供 tvbox-parser 复用，保证两种订阅格式的归一化规则完全一致。
+ *
+ * 点播源额外补全 CMS 接口路径：订阅文件里常见 LibreTV-App 那种只写裸域名的写法，
+ * 不补全的话搜索会请求站点首页拿到 HTML。直播源（false）不做这一步。
  */
 export function normalizeUrl(raw: unknown, trimTrailingSlash: boolean): string | undefined {
   if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
+  const trimmed = trimTrailingSlash ? normalizeSourceApiUrl(raw) : raw.trim();
   if (!trimmed) return undefined;
   if (!/^https?:\/\//i.test(trimmed)) return undefined;
   try {

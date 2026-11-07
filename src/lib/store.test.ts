@@ -10,6 +10,7 @@ vi.mock('./db', () => ({
 
 import { isInDisabledSubscription, isSourceDisabled, keyBelongsToSubscription, SOURCE_DISABLE_LADDER, subKeyPrefix, useAppStore } from './store';
 import type { SourceConfig } from './types';
+import { getAppBuiltinSources } from './app-sources';
 
 const store = () => useAppStore.getState();
 
@@ -388,5 +389,47 @@ describe('订阅整体开关', () => {
     expect(isInDisabledSubscription(store(), `${subKeyPrefix(subUrl)}_1`)).toBe(true);
     expect(isInDisabledSubscription(store(), `${subKeyPrefix(otherUrl)}_1`)).toBe(false);
     expect(isInDisabledSubscription(store(), 'manual_0')).toBe(false);
+  });
+});
+
+describe('importCustomApis（LibreTV-App 内置源导入）', () => {
+  it('首次导入全部内置源并自动勾选', () => {
+    const added = store().importCustomApis(getAppBuiltinSources());
+    expect(added).toBe(20);
+    expect(store().customAPIs).toHaveLength(20);
+    // 全部默认勾选，导入即可直接搜索
+    expect(store().selectedKeys).toHaveLength(20);
+  });
+
+  it('重复导入按地址去重，返回 0 且不产生副本', () => {
+    store().importCustomApis(getAppBuiltinSources());
+    const added = store().importCustomApis(getAppBuiltinSources());
+    expect(added).toBe(0);
+    expect(store().customAPIs).toHaveLength(20);
+  });
+
+  it('已存在同地址源时跳过（用户手工加过同一站点）', () => {
+    store().addCustomApi({ name: '手工源', url: 'https://360zy.com/api.php/provide/vod' });
+    const added = store().importCustomApis(getAppBuiltinSources());
+    expect(added).toBe(19);
+    expect(store().customAPIs.filter((s) => s.url.startsWith('https://360zy.com'))).toHaveLength(1);
+  });
+
+  it('key 被占用时改派新 key 而不覆盖已有源', () => {
+    store().addCustomApi({ key: 'app_zy360', name: '占位源', url: 'https://other.example.com' });
+    store().importCustomApis(getAppBuiltinSources());
+    const zy360 = store().customAPIs.filter((s) => s.url.startsWith('https://360zy.com'));
+    expect(zy360).toHaveLength(1);
+    expect(zy360[0].key).not.toBe('app_zy360');
+    expect(store().customAPIs.find((s) => s.key === 'app_zy360')?.name).toBe('占位源');
+  });
+
+  it('成人内容过滤开启时导入的成人源不自动勾选', () => {
+    useAppStore.setState({ yellowFilter: true });
+    store().importCustomApis([
+      { key: 'app_a', name: 'A', url: 'https://a.example.com' },
+      { key: 'app_b', name: 'B', url: 'https://b.example.com', isAdult: true },
+    ]);
+    expect(store().selectedKeys).toEqual(['app_a']);
   });
 });

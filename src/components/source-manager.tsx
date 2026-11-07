@@ -27,6 +27,8 @@ import { exportConfig, importConfig } from '@/lib/db';
 import { PERSIST_KEY } from '@/lib/persist-storage';
 import { copyToClipboard } from '@/lib/clipboard';
 import { useAuth } from './auth';
+import { getAppBuiltinSources, parseAppLegacySources } from '@/lib/app-sources';
+import { normalizeSourceApiUrl } from '@/lib/source-url';
 import { api } from '@/lib/client-api';
 import { syncSourceSubscription } from '@/lib/subscription-sync';
 import { describeParseStats } from '@/lib/tvbox-parser';
@@ -280,16 +282,30 @@ function VodSourcesPanel() {
 
   const empty = store.envSources.length === 0 && store.customAPIs.length === 0;
 
+  /** 一键导入 LibreTV-App（静态站 / Tauri 版）内置的采集站，按地址去重、可重复点 */
+  const importAppSources = () => {
+    const added = store.importCustomApis(getAppBuiltinSources());
+    toast(
+      added === 0 ? 'LibreTV-App 内置源已全部导入过，无需重复添加' : `已导入 ${added} 个 LibreTV-App 内置源`,
+      added === 0 ? 'info' : 'success'
+    );
+  };
+
   return (
     <section>
       <SectionTitle
         title="点播源"
         hint={empty ? undefined : `共 ${all.length} 个 · 已启用 ${all.filter((s) => store.selectedKeys.includes(s.key)).length}`}
         extra={
-          <button className="btn-primary btn-sm" onClick={() => setEditing('__new__')}>
-            <Icon name="plus" className="w-3.5 h-3.5" />
-            添加 API
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button className="btn-ghost btn-sm" onClick={importAppSources} title="导入 LibreTV-App 内置的 20 个采集站（按地址去重）">
+              导入 App 源
+            </button>
+            <button className="btn-primary btn-sm" onClick={() => setEditing('__new__')}>
+              <Icon name="plus" className="w-3.5 h-3.5" />
+              添加 API
+            </button>
+          </div>
         }
       />
 
@@ -308,9 +324,14 @@ function VodSourcesPanel() {
           title="还没有添加任何点播源"
           description="添加一个 Apple CMS 采集站 API 即可开始搜索影片；也可到「数据源订阅」一次导入点播源与直播源"
           action={
-            <button className="btn-primary btn-sm" onClick={() => setEditing('__new__')}>
-              添加第一个点播源
-            </button>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button className="btn-primary btn-sm" onClick={() => setEditing('__new__')}>
+                添加第一个点播源
+              </button>
+              <button className="btn-ghost btn-sm" onClick={importAppSources}>
+                导入 LibreTV-App 内置源
+              </button>
+            </div>
           }
         />
       ) : (
@@ -1161,6 +1182,13 @@ function summarizeConfig(text: string): string {
 
   const parts: string[] = [];
   const settingsRaw = cfg.data?.[PERSIST_KEY];
+  // LibreTV-App 旧版导出：只有 selectedAPIs / customAPIs，没有本项目快照
+  if (typeof settingsRaw !== 'string') {
+    const legacy = parseAppLegacySources(cfg.data ?? {});
+    if (legacy && legacy.sources.length > 0) {
+      parts.push(`${legacy.sources.length} 个点播源（LibreTV-App 旧版）`);
+    }
+  }
   if (typeof settingsRaw === 'string') {
     try {
       const state = (JSON.parse(settingsRaw) as { state?: Record<string, unknown> }).state ?? {};
@@ -1214,7 +1242,8 @@ function SourceForm({
 
   const submit = () => {
     const n = name.trim();
-    const u = url.trim().replace(/\/+$/, '');
+    // 兼容 LibreTV-App 的裸域名写法：补全 /api.php/provide/vod 后再入库
+    const u = normalizeSourceApiUrl(url);
     if (!n || !u) {
       toast('请输入 API 名称和链接', 'warning');
       return;

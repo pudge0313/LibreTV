@@ -3,6 +3,7 @@ import { guardRequest } from '@/lib/api-guard';
 import { cmsRequestHeaders, parseDetail, parseDetailPageHtml } from '@/lib/cms-parser';
 import { fetchUpstream, getCache, setCache } from '@/lib/fetch-utils';
 import { checkUpstreamAllowed } from '@/lib/ssrf';
+import { normalizeSourceApiUrl } from '@/lib/source-url';
 import type { SourceConfig, VideoDetail } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -60,7 +61,8 @@ export async function GET(req: Request) {
     let resolved: VideoDetail | null = null;
 
     // 1) 标准列表接口
-    const api = `${source.url.replace(/\/+$/, '')}?ac=videolist&ids=${encodeURIComponent(id)}`;
+    // 与搜索同一套归一化：存量数据里可能有 LibreTV-App 那种裸域名
+    const api = `${normalizeSourceApiUrl(source.url)}?ac=videolist&ids=${encodeURIComponent(id)}`;
     const res = await fetchUpstream(api, { timeoutMs: 10000, headers: cmsRequestHeaders() });
     if (res.ok) {
       const data = await res.json();

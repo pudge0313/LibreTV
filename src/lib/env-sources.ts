@@ -1,4 +1,5 @@
 import type { SourceConfig } from './types';
+import { normalizeSourceApiUrl } from './source-url';
 
 /**
  * 部署者通过 DEFAULT_SOURCES 环境变量预置的采集站。
@@ -25,7 +26,8 @@ export function getEnvSources(): SourceConfig[] {
       return {
         key: `env_${i}`,
         name: name.trim(),
-        url: url.trim().replace(/\/+$/, ''),
+        // 允许与 LibreTV-App 配置一致的裸域名写法：统一补全 /api.php/provide/vod
+        url: normalizeSourceApiUrl(url),
         detail: typeof detail === 'string' && detail.trim() ? detail.trim() : undefined,
         isAdult: isAdult === true,
       };
