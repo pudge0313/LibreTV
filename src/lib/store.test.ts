@@ -349,6 +349,52 @@ describe('点播源自动停用阶梯', () => {
     expect(isSourceDisabled(store(), 'a')).toBe(false);
     expect(store().sourceHealth['a'].failStreak).toBe(0);
   });
+
+  it('从未成功过的源：到期恢复后一次失败即升级，不再要求第二次失败', () => {
+    failTwice('a'); // 第 1 级（30 分钟）
+    expire('a');
+
+    // 到期后第一次参与搜索就是完整重试机会，仍失败说明旧病复发 → 直接升级
+    const events = store().recordSourceHealth([fail('a')]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ level: 2, permanent: false, ttlMs: SOURCE_DISABLE_LADDER[1] });
+    expect(isSourceDisabled(store(), 'a')).toBe(true);
+  });
+
+  it('曾成功过的源：到期恢复后仍需连续两次失败才升级（偶发抖动保护）', () => {
+    failTwice('a'); // 第 1 级
+    expire('a');
+    store().recordSourceHealth([okOutcome('a')]); // 置位 everOk，等级降回 0
+    expire('a');
+
+    const first = store().recordSourceHealth([fail('a')]);
+    expect(first).toEqual([]);
+    expect(isSourceDisabled(store(), 'a')).toBe(false);
+
+    const second = store().recordSourceHealth([fail('a')]);
+    expect(second).toHaveLength(1);
+    expect(second[0]).toMatchObject({ level: 1, permanent: false, ttlMs: SOURCE_DISABLE_LADDER[0] });
+  });
+
+  it('everOk 只置位不清除：曾成功过的源失败后仍保留标记', () => {
+    store().recordSourceHealth([okOutcome('a')]);
+    expect(store().sourceHealth['a'].everOk).toBe(true);
+
+    store().recordSourceHealth([fail('a')]);
+    expect(store().sourceHealth['a'].everOk).toBe(true);
+    expect(store().sourceHealth['a'].failStreak).toBe(1);
+  });
+
+  it('从未成功过的死源沿阶梯快速收敛：30 分钟 → 24 小时 → 长期停用各只耗一次失败', () => {
+    failTwice('a'); // 第 1 级
+    expire('a');
+    store().recordSourceHealth([fail('a')]); // 一次失败 → 第 2 级（24 小时）
+    expire('a');
+    const events = store().recordSourceHealth([fail('a')]); // 再一次失败 → 长期停用
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ level: 3, permanent: true });
+    expect(events[0].ttlMs).toBeUndefined();
+  });
 });
 
 describe('订阅整体开关', () => {

@@ -173,6 +173,12 @@ export interface SourceHealthEntry {
   disableCount?: number;
   /** 阶梯用尽后的长期停用：不设到期时间，只能由用户手动恢复 */
   permanent?: boolean;
+  /**
+   * 该源是否曾成功返回过结果。从未成功过的源（-everOk）大概率是彻底挂掉的采集站，
+   * 临时停用到期后一次失败即升级下一级；曾成功过的源仍按「到期后连续两次失败」处理，
+   * 避免偶发抖动的老源被一次失败直接打进 24 小时。
+   */
+  everOk?: boolean;
   timestamp: number;
 }
 
@@ -253,6 +259,8 @@ interface AppState extends AppSettings {
    * 记录一次搜索的逐源健康度；连续失败/超时达到阈值即暂停该源参与搜索。
    * 停用时长按阶梯逐级加重（30 分钟 → 24 小时 → 长期停用），且每成功一次降一级：
    * 偶发抽风的源会自行回落，从未成功过的死源才会升到长期停用。
+   * 停用到期后曾成功过的源需再次连续失败两次才升级；从未成功过的死源
+   * 一次失败即升级（到期参与就是完整重试机会，失败说明旧病复发）。
    * 不直接改 selectedKeys（用户勾选意图保留，且避免变更引用触发搜索重发），
    * 参与搜索与否由调用方经 isSourceDisabled 过滤。
    * 返回本次「新进入停用」的事件列表（供调用方按级别 toast 提示）。
@@ -699,15 +707,25 @@ export const useAppStore = create<AppState>()(
         const events: SourceDisableEvent[] = [];
         for (const o of outcomes) {
           const prev = health[o.sourceKey];
-          // 停用期已过 → 上一次的连续失败已被「停用 + 恢复」打断，重新从 1 开始累计
+          // 停用期已过 → 上一次的连续失败已被「停用 + 恢复」打断。
+          // 曾成功过的源重新从 1 开始累计（给偶发抖动的老源公平的恢复机会）；
+          // 从未成功过的源（everOk 为假）大概率已死，到期后这一次参与就是
+          // 它的完整重试机会，仍失败即视为旧病复发，直接达到阈值升级下一级，
+          // 免得死源每个停用周期都白耗两次搜索的超时等待
           const interrupted = !!prev?.disabledUntil && prev.disabledUntil <= now;
-          const failStreak = o.ok ? 0 : interrupted ? 1 : (prev?.failStreak ?? 0) + 1;
+          const failStreak = o.ok
+            ? 0
+            : interrupted
+              ? prev?.everOk
+                ? 1
+                : SOURCE_DISABLE_THRESHOLD
+              : (prev?.failStreak ?? 0) + 1;
           // 成功一次即降一级（而非清零）：偶发抽风的源会自己降回来，
           // 从未成功过的死源才会一路升到长期停用
           const disableCount = o.ok
             ? Math.max(0, (prev?.disableCount ?? 0) - 1)
             : (prev?.disableCount ?? 0);
-          // entry 覆盖旧记录：成功时停用标记随之消失（立即恢复）
+          // entry 覆盖旧记录：成功时停用标记随之消失（立即恢复）；everOk 只置位不清除
           const entry: SourceHealthEntry = {
             ok: o.ok,
             ms: o.ms,
@@ -715,6 +733,7 @@ export const useAppStore = create<AppState>()(
             timedOut: o.timedOut,
             failStreak,
             disableCount,
+            everOk: o.ok ? true : (prev?.everOk ?? false),
             timestamp: now,
           };
           if (!o.ok && failStreak >= SOURCE_DISABLE_THRESHOLD) {
